@@ -32,9 +32,13 @@ type
         printDef,
         operator,
         returnBlock
+    SourcePos = object
+        line: int
+        col:  int
     Token = object
-        value: string
+        value:     string
         tokenType: TokenType
+        pos:       SourcePos
     NodeRef = ref Node
     Node = object
         id: NodeRef
@@ -46,6 +50,7 @@ type
         children: seq[NodeRef]
 
 var tokens: seq[Token]
+var errors: seq[string]
 var
     id = ""
     strLiteral = ""
@@ -64,49 +69,56 @@ proc isKeyword(identifier: string): bool =
             return true
     return false
 
-proc handleKeywordIdentifiers(identifier: string) =
+proc handleKeywordIdentifiers(identifier: string, pos: SourcePos) =
     case identifier:
         of "loop":
             tokens.add(
                 Token(
                     value: id,
-                    tokenType: loopDef
+                    tokenType: loopDef,
+                    pos: pos
                 )
             )
         of "print":
             tokens.add(
                 Token(
                     value: id,
-                    tokenType: printDef
+                    tokenType: printDef,
+                    pos: pos
                 )
             )
         of "fn":
             tokens.add(
                 Token(
                     value: id,
-                    tokenType: funcDef
+                    tokenType: funcDef,
+                    pos: pos
                 )
             )
         of "true","false":
             tokens.add(
                 Token(
                     value: identifier,
-                    tokenType: boolLiteral
+                    tokenType: boolLiteral,
+                    pos: pos
                 )
             )
         of "return":
             tokens.add(
                 Token(
                     value: "",
-                    tokenType: returnBlock
+                    tokenType: returnBlock,
+                    pos: pos
                 )
             )
         else:
             return
 
-proc characterAnalyse(line: string) =
+proc characterAnalyse(line: string, lineNum: int) =
     if len(line) == 0:
         return
+
+    var tokenStartCol = 0
 
     for i, chr in line:
         case chr:
@@ -114,7 +126,8 @@ proc characterAnalyse(line: string) =
                  tokens.add(
                         Token(
                             value: $chr,
-                            tokenType: operator
+                            tokenType: operator,
+                            pos: SourcePos(line: lineNum, col: i)
                         )
                     )
             of '"':
@@ -124,11 +137,13 @@ proc characterAnalyse(line: string) =
                     tokens.add(
                         Token(
                             value: strLiteral,
-                            tokenType: stringLiteral
+                            tokenType: stringLiteral,
+                            pos: SourcePos(line: lineNum, col: tokenStartCol)
                         )
                     )
                     strLiteral = ""
                 else:
+                    tokenStartCol = i
                     stringStack.add($chr)
             of '(':
                 debug "adding to braces"
@@ -136,7 +151,8 @@ proc characterAnalyse(line: string) =
                 tokens.add(
                     Token(
                         value: $chr,
-                        tokenType: leftBracket
+                        tokenType: leftBracket,
+                        pos: SourcePos(line: lineNum, col: i)
                     )
                 )
 
@@ -147,19 +163,22 @@ proc characterAnalyse(line: string) =
                 tokens.add(
                     Token(
                         value: $chr,
-                        tokenType: leftBracket
+                        tokenType: leftBracket,
+                        pos: SourcePos(line: lineNum, col: i)
                     )
                 )
 
             of ')':
                 debug "found ending brace,popping"
                 if bracesStack.len == 0:
-                    quit "error at" & line
-                discard bracesStack.pop()
+                    errors.add("error: line " & $lineNum & ", col " & $i & ": unmatched ')'")
+                else:
+                    discard bracesStack.pop()
                 tokens.add(
                     Token(
                         value: $chr,
-                        tokenType: rightBracket
+                        tokenType: rightBracket,
+                        pos: SourcePos(line: lineNum, col: i)
                     )
                 )
 
@@ -167,12 +186,14 @@ proc characterAnalyse(line: string) =
                 debug "found ending flower brace,popping"
                 debug $flowerStack
                 if flowerStack.len == 0:
-                    quit "error at" & line
-                discard flowerStack.pop()
+                    errors.add("error: line " & $lineNum & ", col " & $i & ": unmatched '}'")
+                else:
+                    discard flowerStack.pop()
                 tokens.add(
                     Token(
                         value: $chr,
-                        tokenType: rightBracket
+                        tokenType: rightBracket,
+                        pos: SourcePos(line: lineNum, col: i)
                     )
                 )
             of ':':
@@ -180,7 +201,8 @@ proc characterAnalyse(line: string) =
                     tokens.add(
                         Token(
                             value: ":=",
-                            tokenType: varDef
+                            tokenType: varDef,
+                            pos: SourcePos(line: lineNum, col: i)
                         )
                     )
             else:
@@ -190,12 +212,15 @@ proc characterAnalyse(line: string) =
                     strLiteral = strLiteral & $chr
                     debug "strLiteral:" & strLiteral
                 elif match($chr, re"\d"):
+                    if numLiteral.len == 0:
+                        tokenStartCol = i
                     numLiteral = numLiteral & $chr
                     if i+1 > line.len-1:
                         tokens.add(
                                 Token(
                                     value: numLiteral,
-                                    tokenType: numberLiteral
+                                    tokenType: numberLiteral,
+                                    pos: SourcePos(line: lineNum, col: tokenStartCol)
                                 )
                             )
                         numLiteral = ""
@@ -203,7 +228,8 @@ proc characterAnalyse(line: string) =
                         tokens.add(
                                 Token(
                                     value: numLiteral,
-                                    tokenType: numberLiteral
+                                    tokenType: numberLiteral,
+                                    pos: SourcePos(line: lineNum, col: tokenStartCol)
                                 )
                             )
                         numLiteral = ""
@@ -211,28 +237,32 @@ proc characterAnalyse(line: string) =
                 # if not then check if it's a variable that's
                 # being used, mark as an identifier
                 elif match($chr, variableCharacters):
+                    if id.len == 0:
+                        tokenStartCol = i
                     id = id & chr
                     if i+1 > line.len-1:
                         if isKeyword(id):
-                            handleKeywordIdentifiers(id)
+                            handleKeywordIdentifiers(id, SourcePos(line: lineNum, col: tokenStartCol))
                             id = ""
                         else:
                             tokens.add(
                                 Token(
                                     value: id,
-                                    tokenType: identifier
+                                    tokenType: identifier,
+                                    pos: SourcePos(line: lineNum, col: tokenStartCol)
                                 )
                             )
                             id = ""
                     elif not match($line[i+1], variableCharacters):
                         if isKeyword(id):
-                            handleKeywordIdentifiers(id)
+                            handleKeywordIdentifiers(id, SourcePos(line: lineNum, col: tokenStartCol))
                             id = ""
                         else:
                             tokens.add(
                                 Token(
                                     value: id,
-                                    tokenType: identifier
+                                    tokenType: identifier,
+                                    pos: SourcePos(line: lineNum, col: tokenStartCol)
                                 )
                             )
                             id = ""
@@ -288,8 +318,14 @@ proc constructAST():NodeRef =
                 nodeStack.add(blockNode)
 
             of rightBracket:
-                discard nodeStack.pop()
-                discard nodeStack.pop()
+                if nodeStack.len < 2:
+                    errors.add(
+                        "error: line " & $tok.pos.line & ", col " & $tok.pos.col &
+                        ": unexpected '" & tok.value & "'"
+                    )
+                else:
+                    discard nodeStack.pop()
+                    discard nodeStack.pop()
 
             of loopDef:
                 var loopNode: NodeRef
@@ -468,19 +504,30 @@ proc main() =
         fname = "./example/main.mole"
         output = "./example/main.js"
 
+    var lineNum = 1
     for line in lines fname:
         if line.isEmptyOrWhitespace():
+            inc lineNum
             continue
 
         if line.startsWith("--"):
             # ignore comment parsing for now
+            inc lineNum
             continue
         else:
-            characterAnalyse(line)
+            characterAnalyse(line, lineNum)
+
+        inc lineNum
 
     var ast = constructAST()
+
+    if errors.len > 0:
+        for err in errors:
+            stderr.writeLine(err)
+        quit 1
+
     var langOut = astToLanguage(ast)
-    var file_handle = syncio.open(output,FileMode.fmReadWrite)
+    var file_handle = syncio.open(output, FileMode.fmReadWrite)
     syncio.write(file_handle, langOut)
 
 
